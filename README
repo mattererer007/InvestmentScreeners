@@ -1,0 +1,128 @@
+# Setup
+
+## Prerequisites
+
+- Python 3.10+
+- Git
+- Visual Studio Code (recommended)
+
+---
+
+## Clone the Repository
+
+```bash
+git clone <repository-url>
+cd InvestmentScreeners
+```
+
+---
+
+## Create a Virtual Environment
+
+If the virtual environment does not already exist:
+
+```bash
+python -m venv venv
+```
+
+---
+
+## Activate the Virtual Environment
+
+### PowerShell (Windows)
+
+```powershell
+.\venv\Scripts\Activate.ps1
+```
+
+After activation, your prompt should look similar to:
+
+```text
+(venv) PS C:\Local Code\Local Github\investment_screeners\InvestmentScreeners>
+```
+
+### Command Prompt (Windows)
+
+```cmd
+venv\Scripts\activate.bat
+```
+
+---
+
+## Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+If all packages are already installed, you may see:
+
+```text
+Requirement already satisfied...
+```
+
+---
+
+## Verify Python Version
+
+```bash
+python --version
+```
+
+Expected output:
+
+```text
+Python 3.10.2
+```
+
+---
+
+## Run the ETF Screener
+
+```bash
+python etf_screener.py
+```
+
+---
+
+## Common Issues
+
+### PowerShell Cannot Run Activate.ps1
+
+If you receive an execution policy error:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
+Then activate the environment again:
+
+```powershell
+.\venv\Scripts\Activate.ps1
+```
+
+### Requirements File Not Found
+
+Make sure you are running:
+
+```bash
+pip install -r requirements.txt
+```
+
+and not:
+
+```bash
+pip install -r erquirements.txt
+```
+
+(the filename must be `requirements.txt`).
+
+---
+
+## Updating pip
+
+Optional:
+
+```bash
+python -m pip install --upgrade pip
+```
