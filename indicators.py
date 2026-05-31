@@ -48,17 +48,25 @@ def resample_ohlcv(daily: pd.DataFrame, freq: str) -> pd.DataFrame:
 # ──────────────────────────────────────────────────────────────
 
 def compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
-    """Wilder's RSI with EMA-style smoothing (alpha = 1/period)."""
     delta = close.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
 
-    avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    avg_gain = pd.Series(np.nan, index=close.index)
+    avg_loss = pd.Series(np.nan, index=close.index)
+
+    # First Wilder seed = simple average of first 14 gains/losses
+    avg_gain.iloc[period] = gain.iloc[1:period + 1].mean()
+    avg_loss.iloc[period] = loss.iloc[1:period + 1].mean()
+
+    # Wilder recursive smoothing
+    for i in range(period + 1, len(close)):
+        avg_gain.iloc[i] = ((avg_gain.iloc[i - 1] * (period - 1)) + gain.iloc[i]) / period
+        avg_loss.iloc[i] = ((avg_loss.iloc[i - 1] * (period - 1)) + loss.iloc[i]) / period
 
     rs = avg_gain / avg_loss.replace(0, np.nan)
     return 100 - (100 / (1 + rs))
-
 
 # ──────────────────────────────────────────────────────────────
 #  STOCHASTIC SLOW
