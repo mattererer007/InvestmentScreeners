@@ -244,6 +244,24 @@ def call_sec_edgar_tickers():
     print(df.head(10))
     return df
 
+def call_sec_edgar_nyse_stocks():
+    url = "https://www.sec.gov/files/company_tickers_exchange.json"
+    headers = {"User-Agent": "YourName your@email.com"}
+
+    response = requests.get(url, headers=headers, timeout=30)
+    response.raise_for_status()
+    data = response.json()
+
+    df = pd.DataFrame(data["data"], columns=data["fields"])
+
+    nyse_stocks = df[df["exchange"].str.upper() == "NYSE"].copy()
+    nyse_stocks = nyse_stocks.sort_values("ticker")
+
+    print(f"Total NYSE tickers: {len(nyse_stocks)}")
+    print(f"Columns: {list(nyse_stocks.columns)}")
+    print(nyse_stocks.head(20))
+    return nyse_stocks
+
 def call_nasdaq_trader_list():
     url = "https://api.nasdaq.com/api/screener/stocks"
     params = {"tableonly": "true", "limit": 25, "offset": 0, "download": "true"}
@@ -306,4 +324,4 @@ def test_mstarpy_lookup():
 
 
 if __name__ == "__main__":
-    call_eodhd_mutual_fund_list()
+    call_sec_edgar_tickers()
