@@ -1,22 +1,18 @@
 """
-validate_stock.py — Single-stock indicator validator
-=====================================================
-Compute and display RSI, Stochastic Slow, and SMI for a single ticker
-at a specific point in time, then show whether it would be flagged
-by the screener.
+validate_stock_db.py — Single-stock indicator validator (database version)
+===========================================================================
+Identical to validate_stock.py but pulls OHLCV data from the local
+PostgreSQL database instead of downloading from Yahoo Finance.
+
+This is faster (no network call) and uses the exact same data that
+the screener will use, so results are guaranteed to match.
 
 Usage:
-    python validate_stock.py NFLX
-    python validate_stock.py NFLX --end-date today
-    python validate_stock.py NFLX --end-date 2025-01-15
-    python validate_stock.py NFLX --end-date "Q1 2026"
-    python validate_stock.py NFLX --end-date "March 2025"
-    python validate_stock.py NFLX --end-date "Q4 2024"
-
-The end-date controls what data the indicators see. Data AFTER that
-date is excluded, so the indicators reflect exactly what you'd see
-on a chart ending at that date. This lets you backtest against
-historical Barchart readings.
+    python validate_stock_db.py NFLX
+    python validate_stock_db.py NFLX --end-date today
+    python validate_stock_db.py NFLX --end-date 2025-01-15
+    python validate_stock_db.py NFLX --end-date "Q1 2026"
+    python validate_stock_db.py NFLX --end-date "March 2025"
 
 Compare the printed values to Barchart's quarterly chart view with:
     SMI(10, 3)          → SMI column
@@ -32,19 +28,19 @@ import sys
 import re
 import pandas as pd
 import numpy as np
-import yfinance as yf
 from datetime import datetime, timedelta
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-
-from indicators import (resample_ohlcv, compute_all,)
+from data.db import get_session
+from data.models import DailyOHLCV, Ticker
+from indicators import resample_ohlcv, compute_all
 
 
 # ──────────────────────────────────────────────────────────────
-#  CONFIGURATION (must match etf_screener.py)
+#  CONFIGURATION (must match etf_screener.py / validate_stock.py)
 # ──────────────────────────────────────────────────────────────
 
 RSI_PERIOD          = 14
@@ -60,11 +56,9 @@ SMI_THRESHOLD       = -40
 STOCH_AVG_THRESHOLD = 35
 RSI_AVG_THRESHOLD   = 30
 
-HISTORY_YEARS       = 20
-
 
 # ──────────────────────────────────────────────────────────────
-#  DATE PARSING
+#  DATE PARSING (same as validate_stock.py)
 # ──────────────────────────────────────────────────────────────
 
 QUARTER_MAP = {
@@ -97,25 +91,21 @@ def parse_end_date(raw: str) -> datetime:
     if raw.lower() == 'today':
         return datetime.now()
 
-    # Q1 2026, Q4 2024, etc.
     m = re.match(r'^(Q[1-4])\s+(\d{4})$', raw, re.IGNORECASE)
     if m:
         q, year = m.group(1).upper(), int(m.group(2))
         return datetime.strptime(f"{year}-{QUARTER_MAP[q]}", "%Y-%m-%d")
 
-    # March 2025, Jan 2025, etc.
     m = re.match(r'^([A-Za-z]+)\s+(\d{4})$', raw)
     if m:
         month_str, year = m.group(1).lower(), int(m.group(2))
         if month_str in MONTH_MAP:
             month = MONTH_MAP[month_str]
-            # last day of that month
             if month == 12:
                 return datetime(year, 12, 31)
             else:
                 return datetime(year, month + 1, 1) - timedelta(days=1)
 
-    # ISO date: 2025-01-15
     for fmt in ('%Y-%m-%d', '%m/%d/%Y', '%m-%d-%Y', '%Y/%m/%d'):
         try:
             return datetime.strptime(raw, fmt)
@@ -128,30 +118,58 @@ def parse_end_date(raw: str) -> datetime:
 
 
 # ──────────────────────────────────────────────────────────────
-#  DATA DOWNLOAD
+#  DATA LOADING (from PostgreSQL)
 # ──────────────────────────────────────────────────────────────
 
-def download_daily(ticker: str, end_date: datetime) -> pd.DataFrame:
-    """Download daily OHLCV from yfinance, ending at end_date."""
-    start = end_date - timedelta(days=HISTORY_YEARS * 365)
+def load_daily_from_db(ticker: str, end_date: datetime) -> pd.DataFrame:
+    """
+    Load daily OHLCV from the database for a given ticker,
+    ending at end_date.
 
-    print(f"  Downloading daily data: {start.date()} → {end_date.date()}")
+    Returns a DataFrame with DatetimeIndex and columns:
+        open, high, low, close, volume
+    """
+    end_dt = end_date.date() if isinstance(end_date, datetime) else end_date
 
-    tk = yf.Ticker(ticker.upper())
-    df = tk.history(
-        start=start.strftime('%Y-%m-%d'),
-        end=(end_date + timedelta(days=1)).strftime('%Y-%m-%d'),
-        auto_adjust=False,
-    )
+    with get_session() as session:
+        # Check ticker exists
+        ticker_row = session.query(Ticker).filter_by(symbol=ticker.upper()).first()
+        if not ticker_row:
+            print(f"  ERROR: {ticker} not found in tickers table.")
+            print(f"  Run refresh_universe() first to populate the ticker universe.")
+            sys.exit(1)
 
-    if df.empty:
-        print(f"  ERROR: No data returned for {ticker}")
+        # Query OHLCV
+        rows = (
+            session.query(
+                DailyOHLCV.date,
+                DailyOHLCV.open,
+                DailyOHLCV.high,
+                DailyOHLCV.low,
+                DailyOHLCV.close,
+                DailyOHLCV.volume,
+            )
+            .filter(DailyOHLCV.symbol == ticker.upper())
+            .filter(DailyOHLCV.date <= end_dt)
+            .order_by(DailyOHLCV.date)
+            .all()
+        )
+
+    if not rows:
+        print(f"  ERROR: No OHLCV data found for {ticker} in the database.")
+        print(f"  Run refresh_ohlcv() first to download price data.")
         sys.exit(1)
 
-    df.columns = [c.lower().strip() for c in df.columns]
-    df = df[['open', 'high', 'low', 'close', 'volume']].dropna(subset=['close'])
+    df = pd.DataFrame(rows, columns=['date', 'open', 'high', 'low', 'close', 'volume'])
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.set_index('date')
 
-    print(f"  Loaded {len(df)} daily bars: {df.index[0].date()} → {df.index[-1].date()}")
+    # Convert Decimal types to float
+    for col in ['open', 'high', 'low', 'close']:
+        df[col] = df[col].astype(float)
+    df['volume'] = df['volume'].astype(int)
+
+    print(f"  Loaded {len(df)} daily bars from database: {df.index[0].date()} → {df.index[-1].date()}")
     return df
 
 
@@ -179,7 +197,6 @@ def evaluate_screen(qdf: pd.DataFrame) -> dict:
     prev_rsi     = prev['RSI']
     prev_rsi_sig = prev['RSI_signal']
 
-    # ── FILTER: at least one must be true ──
     smi_below   = current_smi < SMI_THRESHOLD
     stoch_below = current_stoch_avg < STOCH_AVG_THRESHOLD
     rsi_below   = current_rsi < RSI_AVG_THRESHOLD
@@ -187,7 +204,6 @@ def evaluate_screen(qdf: pd.DataFrame) -> dict:
     filter_pass = smi_below or stoch_below or rsi_below
     filters_met = sum([smi_below, stoch_below, rsi_below])
 
-    # ── SIGNAL: at least one crossover ──
     stoch_cross = (prev_k <= prev_d) and (current_k > current_d)
     rsi_cross   = (prev_rsi <= prev_rsi_sig) and (current_rsi > current_rsi_sig)
 
@@ -232,7 +248,6 @@ def print_bar_table(bars: pd.DataFrame, label: str, n: int = 8):
 
     print(f"\n  ┌─ {label} — last {n} bars {'─' * 40}")
     print(f"  │")
-    # Format as aligned table
     header = f"  │  {'Date':>12}  {'Close':>8}  {'SMI':>8}  {'%K':>8}  {'%D':>8}  {'RSI':>8}  {'RSI Sig':>8}"
     print(header)
     print(f"  │  {'─'*12}  {'─'*8}  {'─'*8}  {'─'*8}  {'─'*8}  {'─'*8}  {'─'*8}")
@@ -251,13 +266,12 @@ def print_screen_result(result: dict, ticker: str, quarter_date: str):
 
     print(f"\n  ╔{'═' * 60}╗")
     if flagged:
-        print(f"  ║  ✅  {ticker} → FLAGGED by screener{' ' * (37 - len(ticker))}║")
+        print(f"  ║  ✅  {ticker} → FLAGGED by screener{' ' * (28)}║")
     else:
         print(f"  ║  ❌  {ticker} → NOT flagged{' ' * (40 - len(ticker))}║")
     print(f"  ║  Quarter ending: {quarter_date}{' ' * (42 - len(quarter_date))}║")
     print(f"  ╠{'═' * 60}╣")
 
-    # Filter detail
     def check(val): return "✓ YES" if val else "✗ no "
 
     print(f"  ║                                                            ║")
@@ -308,7 +322,7 @@ def print_barchart_comparison(qdf: pd.DataFrame):
 
 def main():
     ap = argparse.ArgumentParser(
-        description='Validate indicator values for a single stock against Barchart')
+        description='Validate indicator values for a single stock (from database)')
     ap.add_argument('ticker', help='Ticker symbol (e.g. NFLX, SPY, XLE)')
     ap.add_argument('--end-date', default='today',
                     help='Analysis end date: today, 2025-01-15, "Q1 2026", "March 2025"')
@@ -325,25 +339,26 @@ def main():
 
     print()
     print("=" * 70)
-    print(f"  STOCK VALIDATOR — {ticker}")
+    print(f"  STOCK VALIDATOR (DB) — {ticker}")
     print(f"  Analysis end date: {end_date.strftime('%Y-%m-%d')}")
+    print(f"  Data source: PostgreSQL (investment_screeners)")
     print("=" * 70)
 
-    # ── Download ──
-    daily = download_daily(ticker, end_date)
+    # ── Load from database ──
+    daily = load_daily_from_db(ticker, end_date)
 
     if len(daily) < 200:
         print(f"  ERROR: Only {len(daily)} daily bars — need at least 200.")
         sys.exit(1)
 
-    # ── Info ──
-    try:
-        info = yf.Ticker(ticker).info
-        print(f"  Name:     {info.get('shortName', '?')}")
-        print(f"  Type:     {info.get('quoteType', '?')}")
-        print(f"  Sector:   {info.get('sector', info.get('category', 'N/A'))}")
-    except Exception:
-        pass
+    # ── Ticker info from database ──
+    with get_session() as session:
+        ticker_row = session.query(Ticker).filter_by(symbol=ticker).first()
+        if ticker_row:
+            print(f"  Name:     {ticker_row.name or '?'}")
+            print(f"  Type:     {ticker_row.asset_type}")
+            print(f"  Exchange: {ticker_row.exchange or 'N/A'}")
+            print(f"  Source:   {ticker_row.source or 'N/A'}")
 
     # ── Quarterly (primary) ──
     qdf = resample_ohlcv(daily, 'QE')
