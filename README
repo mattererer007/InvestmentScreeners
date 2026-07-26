@@ -119,10 +119,20 @@ pip install -r erquirements.txt
 
 ---
 
-## Updating pip
+## Running Refresh on ohlcv
 
-Optional:
+Make sure to be running this from the root
 
 ```bash
-python -m pip install --upgrade pip
+python -c "
+import logging
+logging.basicConfig(level=logging.INFO)
+
+from data.db import get_session
+from data.refresh import refresh_ohlcv
+
+with get_session() as session:
+    stats = refresh_ohlcv(session)
+    print(stats)
+"
 ```
